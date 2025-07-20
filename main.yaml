@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: AWS ECS-RDS Architecture with WAF, ALB, ECR, S3, RDS, Secrets Manager, and Lambda Secret Rotation
+Description: AWS ECS-RDS Architecture with WAF, ALB, ECR, S3, RDS, Secrets Manager, Lambda Secret Rotation, CloudWatch logging, and NAT Gateway
 
 Parameters:
   VpcCidr:
@@ -150,6 +150,29 @@ Resources:
       SubnetId: !Ref PrivateSubnet2
       RouteTableId: !Ref PrivateRouteTable
 
+  # NAT Gateway for Private Subnets
+  NatEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    DependsOn: AttachGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: ECS-NATGW
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      NatGatewayId: !Ref NatGateway
+
   S3Bucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -164,6 +187,12 @@ Resources:
     Type: AWS::ECS::Cluster
     Properties:
       ClusterName: !Sub "${AWS::StackName}-ecs-cluster"
+
+  ECSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${AWS::StackName}-logs"
+      RetentionInDays: 7
 
   TaskExecutionRole:
     Type: AWS::IAM::Role
@@ -203,6 +232,12 @@ Resources:
               Value: !Ref DBUsername
             - Name: DB_PASS
               Value: !Ref DBPassword
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: ecs
 
   ECSServiceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -232,10 +267,10 @@ Resources:
       DesiredCount: 2
       NetworkConfiguration:
         AwsvpcConfiguration:
-          AssignPublicIp: ENABLED
+          AssignPublicIp: DISABLED
           Subnets:
-            - !Ref PublicSubnet1
-            - !Ref PublicSubnet2
+            - !Ref PrivateSubnet1
+            - !Ref PrivateSubnet2
           SecurityGroups:
             - !Ref ECSServiceSecurityGroup
       LoadBalancers:
@@ -364,7 +399,7 @@ Resources:
       Role: !GetAtt SecretRotatorLambdaRole.Arn
       Code:
         S3Bucket: logicwind-script-bucket
-        S3Key: ezyzip.zip 
+        S3Key: ezyzip.zip
       Runtime: python3.8
       Timeout: 60
       Environment:
@@ -388,3 +423,4 @@ Outputs:
   SecretsManagerSecretArn:
     Value: !Ref SecretsManagerSecret
     Description: RDS secret ARN
+    
